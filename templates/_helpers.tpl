@@ -54,10 +54,29 @@ app.kubernetes.io/component: {{ $component }}
 {{- ternary "false" "true" $local -}}
 {{- end }}
 
-{{/* All auto-import URLs: pbfUrls list plus the pbfUrl shorthand */}}
+{{/*
+All auto-import URLs: pbfUrls list plus the pbfUrl shorthand. Tolerates either
+field being given as string OR list, and fails at render time on URLs without
+an http(s) scheme (catches YAML mistakes before they hit wget).
+*/}}
 {{- define "reitti.paikka.pbfUrls" -}}
-{{- $urls := concat (.Values.paikka.autoImport.pbfUrls | default list) (list (.Values.paikka.autoImport.pbfUrl | default "")) -}}
-{{- join " " (compact $urls) -}}
+{{- $urls := list -}}
+{{- $many := .Values.paikka.autoImport.pbfUrls | default list -}}
+{{- if kindIs "string" $many -}}{{- $many = list $many -}}{{- end -}}
+{{- $urls = concat $urls $many -}}
+{{- $one := .Values.paikka.autoImport.pbfUrl | default "" -}}
+{{- if kindIs "slice" $one -}}
+{{- $urls = concat $urls $one -}}
+{{- else if $one -}}
+{{- $urls = append $urls $one -}}
+{{- end -}}
+{{- $urls = compact $urls -}}
+{{- range $u := $urls -}}
+{{- if not (regexMatch "^https?://" $u) -}}
+{{- fail (printf "paikka.autoImport: invalid URL %q — must start with http(s)://" $u) -}}
+{{- end -}}
+{{- end -}}
+{{- join " " $urls -}}
 {{- end }}
 
 {{/*

@@ -40,23 +40,26 @@ spec:
                 exit 0
               fi
               cd /data
-              i=0
+              n=0
               files=""
               for url in $PBF_URLS; do
-                if [ ! -f "filtered-$i.osm.pbf.done" ]; then
+                # key work files by URL hash so reordering/removing regions
+                # can never mis-attribute a cached download
+                h=$(printf '%s' "$url" | sha256sum | cut -c1-8)
+                if [ ! -f "filtered-$h.osm.pbf.done" ]; then
                   echo "Import: downloading $url (resumes partial downloads)"
-                  wget -c -O "region-$i.osm.pbf" "$url"
-                  echo "Import: filtering region-$i (osmium)"
-                  prepare "region-$i.osm.pbf" "filtered-$i.osm.pbf"
-                  touch "filtered-$i.osm.pbf.done"
-                  rm -f "region-$i.osm.pbf"
+                  wget -c -O "region-$h.osm.pbf" "$url"
+                  echo "Import: filtering $url (osmium)"
+                  prepare "region-$h.osm.pbf" "filtered-$h.osm.pbf"
+                  touch "filtered-$h.osm.pbf.done"
+                  rm -f "region-$h.osm.pbf"
                 else
-                  echo "Import: region-$i already downloaded+filtered, skipping"
+                  echo "Import: $url already downloaded+filtered, skipping"
                 fi
-                files="$files filtered-$i.osm.pbf"
-                i=$((i+1))
+                files="$files filtered-$h.osm.pbf"
+                n=$((n+1))
               done
-              echo "Import: importing $i region(s) with {{ .Values.paikka.autoImport.memory }} heap"
+              echo "Import: importing $n region(s) with {{ .Values.paikka.autoImport.memory }} heap"
               import --jar-file /app/app.jar --data-dir /data \
                 --memory {{ .Values.paikka.autoImport.memory }} \
                 {{- with .Values.paikka.autoImport.threads }}
