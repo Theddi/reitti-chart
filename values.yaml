@@ -71,7 +71,29 @@ reitti:
     pullPolicy: IfNotPresent
 
   # Optionally disable local users, e.g. when using oidc only
+  # (rendered as DISABLE_LOCAL_LOGIN; reitti refuses to start with local login
+  # disabled and OIDC off — keep oidc.enabled=true when setting this to false)
   localUsers: true
+
+  # OpenID Connect login (reitti supports exactly one provider).
+  # Register this redirect URI in your IdP (Spring registration id is "oauth"):
+  #   https://<reitti-host>/login/oauth2/code/oauth
+  oidc:
+    enabled: false
+    # Issuer as shown by your IdP, e.g. Authentik:
+    #   https://authentik.example.com/application/o/<app-slug>/
+    issuerUri: ""
+    # Client id inline OR from the secret below (secret wins)
+    clientId: ""
+    existingSecret:
+      name: ""
+      # clientIdKey empty -> inline clientId is used
+      clientIdKey: ""
+      clientSecretKey: client-secret
+    scope: "openid,profile"
+    # Auto-create reitti users on first OIDC login
+    signUpEnabled: true
+    authenticationMethod: client_secret_basic
 
   containerPort: 8080
 
@@ -86,12 +108,17 @@ reitti:
     accessMode: ReadWriteOnce
     storageClassName: ""
 
-  # Extra env (OIDC_ENABLED, PROCESSING_BATCH_SIZE, ... see reitti README)
+  # Extra env (PROCESSING_BATCH_SIZE, ADVERTISE_URI, ... see reitti README)
   env:
     # Container-aware JVM heap: 75% of the memory limit. Without this the JVM
     # defaults to 25% and wastes most of the limit.
     - name: JAVA_OPTS
       value: "-XX:MaxRAMPercentage=75.0"
+    # Build absolute URLs (incl. the OIDC redirect_uri) from the gateway's
+    # X-Forwarded-* headers — without this, redirects behind TLS-terminating
+    # proxies come out as http:// and IdPs reject the callback.
+    - name: SERVER_FORWARD_HEADERS_STRATEGY
+      value: framework
   envFrom: []
 
   # Spring Boot + geo-point batch processing: idles around 500-700Mi, spikes
@@ -183,8 +210,13 @@ paikka:
   # to force. First start takes minutes (small country) to hours (large).
   autoImport:
     enabled: true
-    # Geofabrik extract, e.g. https://download.geofabrik.de/europe/germany-latest.osm.pbf
-    # Empty = auto-import disabled.
+    # One or more Geofabrik extracts — all are downloaded, filtered and
+    # imported together in a single import run. Empty = auto-import disabled.
+    # Size the data PVC and import memory for the SUM of the regions.
+    pbfUrls: []
+      # - https://download.geofabrik.de/europe/germany-latest.osm.pbf
+      # - https://download.geofabrik.de/europe/austria-latest.osm.pbf
+    # Single-URL shorthand, merged with pbfUrls
     pbfUrl: ""
     # JVM heap for the import. Region-dependent (paikka README): ~2g is fine
     # for small countries, large ones want 8-16g. RocksDB needs OFF-heap memory

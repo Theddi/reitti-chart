@@ -34,6 +34,33 @@ spec:
           env:
             - name: DISABLE_LOCAL_LOGIN
               value: {{ include "reitti.localUsers" . | quote }}
+            {{- if .Values.reitti.oidc.enabled }}
+            {{- $oidc := .Values.reitti.oidc }}
+            - name: OIDC_ENABLED
+              value: "true"
+            - name: OIDC_ISSUER_URI
+              value: {{ required "reitti.oidc.issuerUri is required when oidc is enabled" $oidc.issuerUri | quote }}
+            - name: OIDC_CLIENT_ID
+              {{- if and $oidc.existingSecret.name $oidc.existingSecret.clientIdKey }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $oidc.existingSecret.name | quote }}
+                  key: {{ $oidc.existingSecret.clientIdKey | quote }}
+              {{- else }}
+              value: {{ required "set reitti.oidc.clientId or existingSecret.clientIdKey" $oidc.clientId | quote }}
+              {{- end }}
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "reitti.oidc.existingSecret.name is required when oidc is enabled" $oidc.existingSecret.name | quote }}
+                  key: {{ $oidc.existingSecret.clientSecretKey | quote }}
+            - name: OIDC_SCOPE
+              value: {{ $oidc.scope | quote }}
+            - name: OIDC_SIGN_UP_ENABLED
+              value: {{ $oidc.signUpEnabled | quote }}
+            - name: OIDC_AUTHENTICATION_METHOD
+              value: {{ $oidc.authenticationMethod | quote }}
+            {{- end }}
             - name: POSTGIS_HOST
               value: {{ include "reitti.databaseHost" . | quote }}
             - name: POSTGIS_PORT

@@ -28,9 +28,9 @@ Reach Reitti:
 {{- if .Values.paikka.enabled }}
 
 Paikka:
-{{- if and .Values.paikka.autoImport.enabled .Values.paikka.autoImport.pbfUrl }}
+{{- if and .Values.paikka.autoImport.enabled (include "reitti.paikka.pbfUrls" .) }}
   Auto-import is active: the paikka pod first downloads, filters and imports
-    {{ .Values.paikka.autoImport.pbfUrl }}
+    {{ include "reitti.paikka.pbfUrls" . }}
   The first start can take minutes (small country) to hours (large region).
   Watch it:
     kubectl -n {{ .Release.Namespace }} logs -f deploy/{{ include "reitti.fullname" . }}-paikka -c autoimport

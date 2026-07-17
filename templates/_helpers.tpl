@@ -45,6 +45,21 @@ app.kubernetes.io/component: {{ $component }}
 {{- printf "%s:%s" (join "/" $parts) $tag -}}
 {{- end }}
 
+{{/* Value for DISABLE_LOCAL_LOGIN: reitti.localUsers=true -> "false" */}}
+{{- define "reitti.localUsers" -}}
+{{- $local := true -}}
+{{- if hasKey .Values.reitti "localUsers" -}}
+{{- $local = .Values.reitti.localUsers -}}
+{{- end -}}
+{{- ternary "false" "true" $local -}}
+{{- end }}
+
+{{/* All auto-import URLs: pbfUrls list plus the pbfUrl shorthand */}}
+{{- define "reitti.paikka.pbfUrls" -}}
+{{- $urls := concat (.Values.paikka.autoImport.pbfUrls | default list) (list (.Values.paikka.autoImport.pbfUrl | default "")) -}}
+{{- join " " (compact $urls) -}}
+{{- end }}
+
 {{/* PostgreSQL host: explicit database.host wins, else derive from the CNPG cluster */}}
 {{- define "reitti.databaseHost" -}}
 {{- if .Values.database.host -}}

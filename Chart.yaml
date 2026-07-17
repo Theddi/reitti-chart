@@ -7,7 +7,7 @@ description: >-
   Optionally provisions a CloudNativePG Database with PostGIS on an existing
   CNPG cluster.
 type: application
-version: 0.1.1
+version: 0.2.0
 appVersion: "5.1"
 home: https://github.com/dedicatedcode/reitti
 sources:
