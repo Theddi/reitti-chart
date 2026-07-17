@@ -32,6 +32,8 @@ spec:
               containerPort: {{ .Values.reitti.containerPort }}
               protocol: TCP
           env:
+            - name: DISABLE_LOCAL_LOGIN
+              value: {{ include "reitti.localUsers" . | quote }}
             - name: POSTGIS_HOST
               value: {{ include "reitti.databaseHost" . | quote }}
             - name: POSTGIS_PORT

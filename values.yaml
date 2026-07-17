@@ -70,6 +70,9 @@ reitti:
     tag: ""
     pullPolicy: IfNotPresent
 
+  # Optionally disable local users, e.g. when using oidc only
+  localUsers: true
+
   containerPort: 8080
 
   service:
