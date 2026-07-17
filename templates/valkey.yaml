@@ -1,0 +1,106 @@
+{{- if .Values.valkey.enabled }}
+{{- $name := printf "%s-valkey" (include "reitti.fullname" .) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "reitti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: valkey
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "reitti.componentSelectorLabels" (list $ "valkey") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "reitti.componentSelectorLabels" (list $ "valkey") | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.valkey.podSecurityContext | nindent 8 }}
+      containers:
+        - name: valkey
+          image: {{ include "reitti.image" (list $ .Values.valkey.image) | quote }}
+          imagePullPolicy: {{ .Values.valkey.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          args:
+            - "--maxmemory"
+            - {{ .Values.valkey.maxmemory | quote }}
+            # reitti queues processing jobs here — evicting keys would lose them
+            - "--maxmemory-policy"
+            - "noeviction"
+            # cache/queue only; reitti docs: no backup needed
+            - "--save"
+            - ""
+            - "--appendonly"
+            - "no"
+            {{- if .Values.valkey.auth.existingSecret.name }}
+            - "--requirepass"
+            - "$(VALKEY_PASSWORD)"
+            {{- end }}
+          {{- if .Values.valkey.auth.existingSecret.name }}
+          env:
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.valkey.auth.existingSecret.name | quote }}
+                  key: {{ .Values.valkey.auth.existingSecret.key | quote }}
+          {{- end }}
+          ports:
+            - name: valkey
+              containerPort: 6379
+              protocol: TCP
+          {{- with .Values.valkey.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- $ping := "valkey-cli ping | grep -q PONG" }}
+          {{- if .Values.valkey.auth.existingSecret.name }}
+          {{- $ping = "valkey-cli -a \"$VALKEY_PASSWORD\" ping | grep -q PONG" }}
+          {{- end }}
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", {{ $ping | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", {{ $ping | quote }}]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "reitti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: valkey
+spec:
+  type: ClusterIP
+  ports:
+    - name: valkey
+      protocol: TCP
+      port: 6379
+      targetPort: valkey
+  selector:
+    {{- include "reitti.componentSelectorLabels" (list $ "valkey") | nindent 4 }}
+{{- end }}

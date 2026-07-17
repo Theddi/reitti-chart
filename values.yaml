@@ -1,0 +1,344 @@
+nameOverride: ""
+fullnameOverride: ""
+
+# =============================================================================
+# Shared strict security defaults (Kubernetes "Restricted" PSS), applied to
+# reitti and paikka (both images use uid 1000). redis / tileCache carry their
+# own uid-adjusted variants below. Per-component override keys exist too.
+# =============================================================================
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+# =============================================================================
+# Database — reitti needs PostgreSQL WITH the PostGIS extension.
+# Precedence: database.host if set, else derived from the CNPG cluster below.
+# =============================================================================
+database:
+  host: ""
+  port: 5432
+  name: reittidb
+  user: reitti
+  # Secret in THIS release's namespace holding the password for database.user
+  existingSecret:
+    name: reitti-postgres-role
+    key: password
+
+# Optional CloudNativePG Database resource (postgresql.cnpg.io/v1, CNPG >= 1.26
+# for declarative extensions) created on an EXISTING CNPG cluster. The Database
+# CR must live in the cluster's namespace.
+#
+# Host: (<cluster>-rw.<namespace>.svc.cluster.local)
+# NOT handled by this chart (do in the cluster's own config):
+#   1. The role: add `reitti` under the Cluster's managed.roles with a
+#      passwordSecret in the cluster namespace (and replicate that secret into
+#      this release's namespace for database.existingSecret).
+#   2. PostGIS libraries: the cluster must run a PostGIS-capable image
+#      (e.g. ghcr.io/cloudnative-pg/postgis) or CREATE EXTENSION will fail.
+cnpg:
+  enabled: true
+  cluster:
+    name: postgres
+    namespace: database
+  extensions:
+    - name: postgis
+      version: '3.6.4'
+
+# =============================================================================
+# Reitti — main app (Spring Boot, uid 1000, listens on 8080)
+# =============================================================================
+reitti:
+  image:
+    registry: docker.io
+    repository: dedicatedcode
+    image: reitti
+    # Defaults to the chart appVersion when empty
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  containerPort: 8080
+
+  service:
+    type: ClusterIP
+    port: 80
+
+  # Uploaded files & app data (/data). Back this up along with the database.
+  persistence:
+    enabled: true
+    size: 5Gi
+    accessMode: ReadWriteOnce
+    storageClassName: ""
+
+  # Extra env (OIDC_ENABLED, PROCESSING_BATCH_SIZE, ... see reitti README)
+  env:
+    # Container-aware JVM heap: 75% of the memory limit. Without this the JVM
+    # defaults to 25% and wastes most of the limit.
+    - name: JAVA_OPTS
+      value: "-XX:MaxRAMPercentage=75.0"
+  envFrom: []
+
+  # Spring Boot + geo-point batch processing: idles around 500-700Mi, spikes
+  # during imports/processing. 2Gi limit -> ~1.5Gi heap keeps it out of
+  # OOM/GC-thrash territory; no CPU limit (avoids throttling during processing).
+  resources:
+    requests:
+      cpu: 250m
+      memory: 768Mi
+    limits:
+      memory: 2Gi
+
+  emptyDirs:
+    - name: tmp
+      mountPath: /tmp
+
+  httproute:
+    enabled: false
+    annotations: {}
+    parentRefs:
+      - name: ""
+        # namespace: ""
+        # sectionName: ""
+    hostnames:
+      - reitti.example.com
+    rules: []
+
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: reitti.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+# =============================================================================
+# Paikka — reverse geocoding engine (Spring Boot, uid 1000, listens on 8080).
+# Its /data holds prepared OSM exports (see chart README for the import flow).
+# =============================================================================
+paikka:
+  enabled: true
+
+  image:
+    registry: docker.io
+    repository: dedicatedcode
+    image: paikka
+    tag: "1.1"
+    pullPolicy: IfNotPresent
+
+  containerPort: 8080
+
+  service:
+    type: ClusterIP
+    port: 80
+
+  # Admin dashboard password: inline or from a secret (secret wins)
+  admin:
+    password: ""
+    existingSecret:
+      name: ""
+      key: ""
+
+  # Public base URL. Empty = derived from its httproute/ingress host, falling
+  # back to the in-cluster service URL.
+  baseUrl: ""
+
+  persistence:
+    # Prepared OSM data (/data). Peak usage during import (pbf + filtered +
+    # import working set, numbers from the paikka README): Netherlands ~5GB,
+    # Germany ~21GB, planet ~300GB+. Final dataset is much smaller.
+    data:
+      enabled: true
+      size: 25Gi
+      accessMode: ReadWriteOnce
+      storageClassName: ""
+    # Usage statistics (/stats)
+    stats:
+      enabled: true
+      size: 1Gi
+      accessMode: ReadWriteOnce
+      storageClassName: ""
+
+  # Automatically download, filter and import an OSM extract on first start
+  # (initContainer — runs BEFORE the app opens its RocksDB, so no lock
+  # conflicts). Re-runs only when pbfUrl changes; delete /data/.helm-autoimport
+  # to force. First start takes minutes (small country) to hours (large).
+  autoImport:
+    enabled: true
+    # Geofabrik extract, e.g. https://download.geofabrik.de/europe/germany-latest.osm.pbf
+    # Empty = auto-import disabled.
+    pbfUrl: ""
+    # JVM heap for the import. Region-dependent (paikka README): ~2g is fine
+    # for small countries, large ones want 8-16g. RocksDB needs OFF-heap memory
+    # on top — keep the initContainer memory limit well above the heap.
+    memory: 2g
+    # Import threads; empty = half of the CPU cores
+    threads: ""
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        memory: 4Gi
+
+  # Register this Paikka instance as a geocoder in reitti's database (reitti
+  # stores geocoders in its geocode_services table; there is no env var for
+  # it). Post-install/upgrade Job: waits for reitti's schema, then upserts.
+  # priority 0 = tried before the seeded hosted Paikka (priority 1), which
+  # stays available as fallback.
+  registerGeocoder:
+    enabled: true
+    name: "Paikka (in-cluster)"
+    priority: 0
+    image:
+      registry: docker.io
+      repository: ""
+      image: postgres
+      tag: "17-alpine"
+      pullPolicy: IfNotPresent
+
+  env:
+    # 50% heap only: paikka serves from RocksDB whose block cache lives
+    # OFF-heap — the native side needs the other half of the limit.
+    - name: JAVA_OPTS
+      value: "-XX:MaxRAMPercentage=50.0"
+  envFrom: []
+
+  # Read-heavy serving is light (paikka README: "resource efficient");
+  # 1.5Gi limit -> 768Mi heap + RocksDB native headroom.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 1536Mi
+
+  emptyDirs:
+    - name: tmp
+      mountPath: /tmp
+
+  httproute:
+    enabled: false
+    annotations: {}
+    parentRefs:
+      - name: ""
+    hostnames:
+      - paikka.example.com
+    rules: []
+
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: paikka.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+# =============================================================================
+# Valkey — required by reitti (Redis-compatible; reitti's REDIS_* env vars are
+# pointed at it). Runs stateless: cache/queue only, no persistence — but with
+# maxmemory-policy noeviction since reitti queues processing jobs in it.
+# =============================================================================
+valkey:
+  enabled: true
+
+  image:
+    registry: docker.io
+    repository: valkey
+    image: valkey
+    tag: "9.1-alpine"
+    pullPolicy: IfNotPresent
+
+  # Keep below resources.limits.memory (leave ~64Mi headroom)
+  maxmemory: 256mb
+
+  # Optional auth (--requirepass); also wired into reitti as REDIS_PASSWORD
+  auth:
+    existingSecret:
+      name: ""
+      key: ""
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 320Mi
+
+  # valkey:alpine ships uid/gid 999
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Used only when enabled=false: point reitti at an existing Valkey/Redis
+  external:
+    host: ""
+    port: 6379
+    existingSecret:   # optional REDIS_PASSWORD
+      name: ""
+      key: ""
+
+# =============================================================================
+# Tile cache — optional nginx proxy cache for OSM map tiles
+# (dedicatedcode/reitti-tile-cache). When disabled, reitti fetches tiles
+# directly (TILES_CACHE is set to "").
+# =============================================================================
+tileCache:
+  enabled: true
+
+  image:
+    registry: docker.io
+    repository: dedicatedcode
+    image: reitti-tile-cache
+    # Defaults to the chart appVersion when empty
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  # Cached tiles (proxy_cache max_size is 2g in the image config)
+  persistence:
+    enabled: true
+    size: 3Gi
+    accessMode: ReadWriteOnce
+    storageClassName: ""
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+  # nginx (debian) ships uid/gid 101
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 101
+    runAsGroup: 101
+    fsGroup: 101
+    seccompProfile:
+      type: RuntimeDefault
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

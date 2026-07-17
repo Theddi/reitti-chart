@@ -1,0 +1,49 @@
+Reitti {{ .Values.reitti.image.tag | default .Chart.AppVersion }} deployed{{ if .Values.paikka.enabled }} with Paikka{{ end }}.
+
+Database: {{ .Values.database.name }} as {{ .Values.database.user }}@{{ include "reitti.databaseHost" . }}:{{ .Values.database.port }}
+{{- if .Values.cnpg.enabled }}
+A CNPG Database resource was created in namespace "{{ .Values.cnpg.cluster.namespace }}"
+(cluster "{{ .Values.cnpg.cluster.name }}"{{ with .Values.cnpg.extensions }}, extensions: {{ range $i, $e := . }}{{ if $i }}, {{ end }}{{ $e.name }} {{ $e.version }}{{ end }}{{ end }}).
+
+Outside this chart, make sure that:
+ 1. The cluster runs a PostGIS-capable image (e.g. ghcr.io/cloudnative-pg/postgis),
+    otherwise CREATE EXTENSION postgis fails.
+ 2. Role "{{ .Values.database.user }}" exists as a managed role on the cluster, and its
+    password secret is available in this namespace as
+    "{{ .Values.database.existingSecret.name }}" (key "{{ .Values.database.existingSecret.key }}").
+{{- end }}
+
+Reach Reitti:
+{{- if .Values.reitti.httproute.enabled }}
+{{- range .Values.reitti.httproute.hostnames }}
+  https://{{ . }}
+{{- end }}
+{{- else if .Values.reitti.ingress.enabled }}
+{{- range .Values.reitti.ingress.hosts }}
+  http{{ if $.Values.reitti.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "reitti.fullname" . }} 8080:{{ .Values.reitti.service.port }}
+{{- end }}
+{{- if .Values.paikka.enabled }}
+
+Paikka:
+{{- if and .Values.paikka.autoImport.enabled .Values.paikka.autoImport.pbfUrl }}
+  Auto-import is active: the paikka pod first downloads, filters and imports
+    {{ .Values.paikka.autoImport.pbfUrl }}
+  The first start can take minutes (small country) to hours (large region).
+  Watch it:
+    kubectl -n {{ .Release.Namespace }} logs -f deploy/{{ include "reitti.fullname" . }}-paikka -c autoimport
+{{- else }}
+  Auto-import is OFF (set paikka.autoImport.pbfUrl to enable). Paikka serves an
+  empty dataset until you import OSM data — see the README.
+{{- end }}
+{{- if .Values.paikka.registerGeocoder.enabled }}
+  A post-install job registers it in reitti as geocoder
+  "{{ .Values.paikka.registerGeocoder.name }}" (priority {{ .Values.paikka.registerGeocoder.priority }}, ahead of the hosted fallback):
+    kubectl -n {{ .Release.Namespace }} logs job/{{ include "reitti.fullname" . }}-register-geocoder
+{{- else }}
+  Point Reitti's geocoding settings (admin UI) at:
+    http://{{ include "reitti.fullname" . }}-paikka:{{ .Values.paikka.service.port }}
+{{- end }}
+{{- end }}

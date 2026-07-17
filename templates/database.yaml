@@ -1,0 +1,22 @@
+{{- if .Values.cnpg.enabled }}
+# CloudNativePG declarative database (CNPG >= 1.26 for spec.extensions).
+# Lives in the CNPG cluster's namespace — CNPG requires Database resources to
+# be in the same namespace as the Cluster they belong to.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: {{ .Values.database.name }}
+  namespace: {{ .Values.cnpg.cluster.namespace }}
+  labels:
+    {{- include "reitti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  name: {{ .Values.database.name }}
+  owner: {{ .Values.database.user }}
+  cluster:
+    name: {{ .Values.cnpg.cluster.name }}
+  {{- with .Values.cnpg.extensions }}
+  extensions:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

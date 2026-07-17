@@ -1,0 +1,176 @@
+{{- $fullName := include "reitti.fullname" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "reitti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: reitti
+spec:
+  replicas: 1
+  # RWO data PVC + DB migrations on start: old pod must stop first
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "reitti.componentSelectorLabels" (list $ "reitti") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "reitti.componentSelectorLabels" (list $ "reitti") | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml (.Values.reitti.podSecurityContext | default .Values.podSecurityContext) | nindent 8 }}
+      containers:
+        - name: reitti
+          image: {{ include "reitti.image" (list $ .Values.reitti.image) | quote }}
+          imagePullPolicy: {{ .Values.reitti.image.pullPolicy }}
+          securityContext:
+            {{- toYaml (.Values.reitti.securityContext | default .Values.securityContext) | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.reitti.containerPort }}
+              protocol: TCP
+          env:
+            - name: POSTGIS_HOST
+              value: {{ include "reitti.databaseHost" . | quote }}
+            - name: POSTGIS_PORT
+              value: {{ .Values.database.port | quote }}
+            - name: POSTGIS_DB
+              value: {{ .Values.database.name | quote }}
+            - name: POSTGIS_USER
+              value: {{ .Values.database.user | quote }}
+            - name: POSTGIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "database.existingSecret.name is required" .Values.database.existingSecret.name | quote }}
+                  key: {{ .Values.database.existingSecret.key | quote }}
+            {{- if .Values.valkey.enabled }}
+            - name: REDIS_HOST
+              value: {{ printf "%s-valkey" $fullName | quote }}
+            - name: REDIS_PORT
+              value: "6379"
+            {{- if .Values.valkey.auth.existingSecret.name }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.valkey.auth.existingSecret.name | quote }}
+                  key: {{ .Values.valkey.auth.existingSecret.key | quote }}
+            {{- end }}
+            {{- else }}
+            - name: REDIS_HOST
+              value: {{ required "valkey.external.host is required when valkey.enabled=false" .Values.valkey.external.host | quote }}
+            - name: REDIS_PORT
+              value: {{ .Values.valkey.external.port | quote }}
+            {{- if .Values.valkey.external.existingSecret.name }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.valkey.external.existingSecret.name | quote }}
+                  key: {{ .Values.valkey.external.existingSecret.key | quote }}
+            {{- end }}
+            {{- end }}
+            - name: TILES_CACHE
+              {{- if .Values.tileCache.enabled }}
+              value: {{ printf "http://%s-tile-cache" $fullName | quote }}
+              {{- else }}
+              value: ""
+              {{- end }}
+            {{- with .Values.reitti.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.reitti.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.reitti.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            {{- range .Values.reitti.emptyDirs }}
+            - name: {{ .name }}
+              mountPath: {{ .mountPath }}
+            {{- end }}
+      volumes:
+        - name: data
+        {{- if .Values.reitti.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $fullName }}-data
+        {{- else }}
+          emptyDir: {}
+        {{- end }}
+        {{- range .Values.reitti.emptyDirs }}
+        - name: {{ .name }}
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "reitti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: reitti
+spec:
+  type: {{ .Values.reitti.service.type }}
+  ports:
+    - name: http
+      protocol: TCP
+      port: {{ .Values.reitti.service.port }}
+      targetPort: http
+  selector:
+    {{- include "reitti.componentSelectorLabels" (list $ "reitti") | nindent 4 }}
+{{- if .Values.reitti.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullName }}-data
+  labels:
+    {{- include "reitti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: reitti
+spec:
+  accessModes:
+    - {{ .Values.reitti.persistence.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.reitti.persistence.size | quote }}
+  {{- with .Values.reitti.persistence.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}
+---
+{{ include "reitti.componentIngress" (dict "root" $ "svcName" $fullName "svcPort" .Values.reitti.service.port "ing" .Values.reitti.ingress "component" "reitti") }}
+---
+{{ include "reitti.componentHTTPRoute" (dict "root" $ "svcName" $fullName "svcPort" .Values.reitti.service.port "route" .Values.reitti.httproute "component" "reitti") }}

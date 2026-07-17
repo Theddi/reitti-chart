@@ -1,0 +1,229 @@
+{{- if .Values.paikka.enabled }}
+{{- $fullName := include "reitti.fullname" . }}
+{{- $name := printf "%s-paikka" $fullName }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "reitti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: paikka
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "reitti.componentSelectorLabels" (list $ "paikka") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "reitti.componentSelectorLabels" (list $ "paikka") | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml (.Values.paikka.podSecurityContext | default .Values.podSecurityContext) | nindent 8 }}
+      {{- if and .Values.paikka.autoImport.enabled .Values.paikka.autoImport.pbfUrl }}
+      # Runs before the app opens its RocksDB, so import and serving never
+      # fight over the database lock. Skips instantly once imported.
+      initContainers:
+        - name: autoimport
+          image: {{ include "reitti.image" (list $ .Values.paikka.image) | quote }}
+          imagePullPolicy: {{ .Values.paikka.image.pullPolicy }}
+          securityContext:
+            {{- toYaml (.Values.paikka.securityContext | default .Values.securityContext) | nindent 12 }}
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              marker=/data/.helm-autoimport
+              if [ -f "$marker" ] && [ "$(cat "$marker")" = "$PBF_URL" ]; then
+                echo "Auto-import: dataset for $PBF_URL already present, skipping."
+                exit 0
+              fi
+              cd /data
+              echo "Auto-import: downloading $PBF_URL"
+              wget -q -O region.osm.pbf "$PBF_URL"
+              echo "Auto-import: filtering (osmium)"
+              prepare region.osm.pbf region-filtered.osm.pbf
+              echo "Auto-import: importing with {{ .Values.paikka.autoImport.memory }} heap"
+              import --jar-file /app/app.jar --data-dir /data \
+                --memory {{ .Values.paikka.autoImport.memory }} \
+                {{- with .Values.paikka.autoImport.threads }}
+                --threads {{ . }} \
+                {{- end }}
+                region-filtered.osm.pbf
+              rm -f region.osm.pbf region-filtered.osm.pbf
+              printf '%s' "$PBF_URL" > "$marker"
+              echo "Auto-import: done."
+          env:
+            - name: PBF_URL
+              value: {{ .Values.paikka.autoImport.pbfUrl | quote }}
+          {{- with .Values.paikka.autoImport.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            {{- range .Values.paikka.emptyDirs }}
+            - name: {{ .name }}
+              mountPath: {{ .mountPath }}
+            {{- end }}
+      {{- end }}
+      containers:
+        - name: paikka
+          image: {{ include "reitti.image" (list $ .Values.paikka.image) | quote }}
+          imagePullPolicy: {{ .Values.paikka.image.pullPolicy }}
+          securityContext:
+            {{- toYaml (.Values.paikka.securityContext | default .Values.securityContext) | nindent 12 }}
+          # The image entrypoint uses `runuser`, which only works as root. We
+          # already run as the image's paikka user (uid 1000), so start the jar
+          # directly (from /data, as the entrypoint would).
+          command:
+            - /bin/sh
+            - -c
+            - cd /data && exec java $JAVA_OPTS -jar /app/app.jar -Dspring.profiles.active=docker
+          ports:
+            - name: http
+              containerPort: {{ .Values.paikka.containerPort }}
+              protocol: TCP
+          env:
+            - name: BASE_URL
+              value: {{ include "reitti.paikka.baseUrl" . | quote }}
+            {{- if .Values.paikka.admin.existingSecret.name }}
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.paikka.admin.existingSecret.name | quote }}
+                  key: {{ .Values.paikka.admin.existingSecret.key | quote }}
+            {{- else if .Values.paikka.admin.password }}
+            - name: ADMIN_PASSWORD
+              value: {{ .Values.paikka.admin.password | quote }}
+            {{- end }}
+            {{- with .Values.paikka.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.paikka.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.paikka.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: stats
+              mountPath: /stats
+            {{- range .Values.paikka.emptyDirs }}
+            - name: {{ .name }}
+              mountPath: {{ .mountPath }}
+            {{- end }}
+      volumes:
+        - name: data
+        {{- if .Values.paikka.persistence.data.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $name }}-data
+        {{- else }}
+          emptyDir: {}
+        {{- end }}
+        - name: stats
+        {{- if .Values.paikka.persistence.stats.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $name }}-stats
+        {{- else }}
+          emptyDir: {}
+        {{- end }}
+        {{- range .Values.paikka.emptyDirs }}
+        - name: {{ .name }}
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "reitti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: paikka
+spec:
+  type: {{ .Values.paikka.service.type }}
+  ports:
+    - name: http
+      protocol: TCP
+      port: {{ .Values.paikka.service.port }}
+      targetPort: http
+  selector:
+    {{- include "reitti.componentSelectorLabels" (list $ "paikka") | nindent 4 }}
+{{- if .Values.paikka.persistence.data.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}-data
+  labels:
+    {{- include "reitti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: paikka
+spec:
+  accessModes:
+    - {{ .Values.paikka.persistence.data.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.paikka.persistence.data.size | quote }}
+  {{- with .Values.paikka.persistence.data.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}
+{{- if .Values.paikka.persistence.stats.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}-stats
+  labels:
+    {{- include "reitti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: paikka
+spec:
+  accessModes:
+    - {{ .Values.paikka.persistence.stats.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.paikka.persistence.stats.size | quote }}
+  {{- with .Values.paikka.persistence.stats.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}
+---
+{{ include "reitti.componentIngress" (dict "root" $ "svcName" $name "svcPort" .Values.paikka.service.port "ing" .Values.paikka.ingress "component" "paikka") }}
+---
+{{ include "reitti.componentHTTPRoute" (dict "root" $ "svcName" $name "svcPort" .Values.paikka.service.port "route" .Values.paikka.httproute "component" "paikka") }}
+{{- end }}

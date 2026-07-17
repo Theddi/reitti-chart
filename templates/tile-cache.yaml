@@ -1,0 +1,119 @@
+{{- if .Values.tileCache.enabled }}
+{{- $name := printf "%s-tile-cache" (include "reitti.fullname" .) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "reitti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tile-cache
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "reitti.componentSelectorLabels" (list $ "tile-cache") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "reitti.componentSelectorLabels" (list $ "tile-cache") | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.tileCache.podSecurityContext | nindent 8 }}
+      containers:
+        - name: tile-cache
+          image: {{ include "reitti.image" (list $ .Values.tileCache.image) | quote }}
+          imagePullPolicy: {{ .Values.tileCache.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          # The image entrypoint renders its config to the read-only
+          # /etc/nginx/nginx.conf and listens on the privileged port 80.
+          # Render to /tmp instead, move pid there and listen on 8080 so the
+          # strict non-root securityContext holds.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              export RESOLVER_IP="${RESOLVER_IP:-$(grep nameserver /etc/resolv.conf | awk '{print $2}' | head -n 1)}"
+              echo "Using resolver IP: $RESOLVER_IP"
+              envsubst '${RESOLVER_IP}' < /etc/nginx/nginx.conf.template > /tmp/nginx.conf
+              sed -i -e 's/listen 80/listen 8080/g' -e 's/listen \[::\]:80/listen [::]:8080/g' \
+                     -e 's|pid /var/run/nginx.pid;|pid /tmp/nginx.pid;|' /tmp/nginx.conf
+              exec nginx -c /tmp/nginx.conf -g 'daemon off;'
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          {{- with .Values.tileCache.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /var/cache/nginx
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+        {{- if .Values.tileCache.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $name }}
+        {{- else }}
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "reitti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tile-cache
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: http
+  selector:
+    {{- include "reitti.componentSelectorLabels" (list $ "tile-cache") | nindent 4 }}
+{{- if .Values.tileCache.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "reitti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tile-cache
+spec:
+  accessModes:
+    - {{ .Values.tileCache.persistence.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.tileCache.persistence.size | quote }}
+  {{- with .Values.tileCache.persistence.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}
+{{- end }}

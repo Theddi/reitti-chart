@@ -1,0 +1,21 @@
+apiVersion: v2
+name: reitti
+description: >-
+  Deploys Reitti (personal location tracking) together with Paikka (reverse
+  geocoding), Redis and an optional OSM tile cache. Strict-by-default security
+  (Restricted Pod Security Standard), aligned with the simple-container chart.
+  Optionally provisions a CloudNativePG Database with PostGIS on an existing
+  CNPG cluster.
+type: application
+version: 0.1.0
+appVersion: "5.1"
+home: https://github.com/dedicatedcode/reitti
+sources:
+  - https://github.com/dedicatedcode/reitti
+  - https://github.com/dedicatedcode/paikka
+keywords:
+  - reitti
+  - paikka
+  - location-tracking
+  - geocoding
+  - postgis

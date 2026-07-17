@@ -1,0 +1,73 @@
+{{- if and .Values.paikka.enabled .Values.paikka.registerGeocoder.enabled }}
+{{- $fullName := include "reitti.fullname" . }}
+{{- $svcName := .Values.paikka.registerGeocoder.name | replace "'" "''" }}
+{{- $svcUrl := printf "http://%s-paikka:%v" $fullName .Values.paikka.service.port }}
+# Registers the in-cluster Paikka as a geocoder in reitti's geocode_services
+# table (reitti has no env var for custom geocoders — they live in the DB).
+# Waits until reitti's Flyway migrations created the schema, then upserts.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullName }}-register-geocoder
+  labels:
+    {{- include "reitti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: register-geocoder
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 10
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: register-geocoder
+    spec:
+      restartPolicy: OnFailure
+      # postgres:alpine ships uid/gid 70
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: register-geocoder
+          image: {{ include "reitti.image" (list $ .Values.paikka.registerGeocoder.image) | quote }}
+          imagePullPolicy: {{ .Values.paikka.registerGeocoder.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: PGHOST
+              value: {{ include "reitti.databaseHost" . | quote }}
+            - name: PGPORT
+              value: {{ .Values.database.port | quote }}
+            - name: PGDATABASE
+              value: {{ .Values.database.name | quote }}
+            - name: PGUSER
+              value: {{ .Values.database.user | quote }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret.name | quote }}
+                  key: {{ .Values.database.existingSecret.key | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              echo "Waiting for reitti schema (geocode_services)..."
+              until psql -tAc "SELECT 1 FROM geocode_services LIMIT 1" >/dev/null 2>&1; do
+                sleep 5
+              done
+              echo "Registering geocoder '{{ $svcName }}' -> {{ $svcUrl }}"
+              psql -v ON_ERROR_STOP=1 <<'EOSQL'
+              INSERT INTO geocode_services (name, url, enabled, type, priority, additional_params)
+              VALUES ('{{ $svcName }}', '{{ $svcUrl }}', true, 'PAIKKA', {{ .Values.paikka.registerGeocoder.priority }}, '{"limit": "5"}')
+              ON CONFLICT (name) DO UPDATE
+                SET url = EXCLUDED.url,
+                    enabled = true,
+                    priority = EXCLUDED.priority;
+              EOSQL
+              echo "Done."
+{{- end }}
