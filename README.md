@@ -13,8 +13,9 @@ RuntimeDefault).
 | valkey | on | Redis-compatible cache/queue, stateless, `noeviction`, uid 999 |
 | tile-cache | on | nginx OSM tile proxy cache, uid 101 |
 | CNPG Database | on | `Database` CR on an existing CloudNativePG cluster |
-| auto-import | on* | initContainer importing an OSM extract into paikka (*needs `pbfUrl`) |
+| auto-import | on* | resumable Job importing OSM extracts into paikka (*needs `pbfUrls`) |
 | register-geocoder | on | Job registering paikka in reitti's `geocode_services` table |
+| waitFor | on | init waits: reitti → db/valkey/tile-cache, paikka → import job |
 
 ## Database (CloudNativePG + PostGIS)
 
@@ -79,13 +80,18 @@ httproute/ingress host when one is enabled.
 
 ### Auto-import (default)
 
-Set `paikka.autoImport.pbfUrl` to a
-[Geofabrik](https://download.geofabrik.de/) extract and the paikka pod's
-`autoimport` **initContainer** downloads, filters (`osmium`) and imports it
-before the app starts — deliberately an initContainer, not a Job: paikka serves
-from RocksDB, and importing while the app holds the DB open would conflict over
-the RocksDB lock. The import runs once; it re-runs only when `pbfUrl` changes
-(marker `/data/.helm-autoimport`).
+Set `paikka.autoImport.pbfUrls` to one or more
+[Geofabrik](https://download.geofabrik.de/) extracts (or use the `pbfUrl`
+shorthand). A **Job** (`<fullname>-paikka-import-<hash>`) downloads, filters
+(`osmium`) and imports them into the data PVC, while the paikka pod's
+`wait-for-import` initContainer blocks until the completion marker exists — so
+the app never opens its RocksDB while the job writes it, and pod restarts
+during a long import cost nothing. The job is **restart-safe**: downloads
+resume (`wget -c`) and already-filtered regions are skipped. It is deliberately
+*not* a helm hook: under ArgoCD, post-install hooks run as PostSync (after the
+app is healthy), which would deadlock against the waiting paikka pod. Changing
+the URL set creates a new job (hash in the name) and triggers a re-import on
+the next pod cycle (marker `/data/.helm-autoimport`).
 
 Sizing (from the paikka README benchmarks):
 

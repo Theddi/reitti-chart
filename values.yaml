@@ -374,6 +374,23 @@ tileCache:
     seccompProfile:
       type: RuntimeDefault
 
+# =============================================================================
+# Startup dependencies — initContainers that wait for a component's hard
+# dependencies before it starts (docker-compose depends_on equivalent):
+#   reitti waits for the database, valkey and (if enabled) the tile cache;
+#   paikka waits for the import job to finish.
+# Reitti deliberately does NOT wait for paikka: geocoding is asynchronous, and
+# blocking the dashboard behind an hours-long OSM import would help nobody.
+# =============================================================================
+waitFor:
+  enabled: true
+  image:
+    registry: docker.io
+    repository: ""
+    image: busybox
+    tag: "1.37"
+    pullPolicy: IfNotPresent
+
 nodeSelector: {}
 tolerations: []
 affinity: {}

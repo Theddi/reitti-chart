@@ -29,11 +29,12 @@ Reach Reitti:
 
 Paikka:
 {{- if and .Values.paikka.autoImport.enabled (include "reitti.paikka.pbfUrls" .) }}
-  Auto-import is active: the paikka pod first downloads, filters and imports
+  Auto-import is active: a job downloads, filters and imports
     {{ include "reitti.paikka.pbfUrls" . }}
-  The first start can take minutes (small country) to hours (large region).
+  and the paikka pod waits for it before starting. Downloads resume after
+  interruptions. First run takes minutes (small country) to hours (large).
   Watch it:
-    kubectl -n {{ .Release.Namespace }} logs -f deploy/{{ include "reitti.fullname" . }}-paikka -c autoimport
+    kubectl -n {{ .Release.Namespace }} logs -f job/{{ include "reitti.paikka.importJobName" . }}
 {{- else }}
   Auto-import is OFF (set paikka.autoImport.pbfUrl to enable). Paikka serves an
   empty dataset until you import OSM data — see the README.

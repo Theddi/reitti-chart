@@ -21,6 +21,43 @@ spec:
     spec:
       securityContext:
         {{- toYaml (.Values.reitti.podSecurityContext | default .Values.podSecurityContext) | nindent 8 }}
+      {{- if .Values.waitFor.enabled }}
+      # docker-compose depends_on equivalent: hard dependencies only. Paikka is
+      # intentionally absent — geocoding is asynchronous and reitti must not
+      # block behind an hours-long OSM import.
+      initContainers:
+        {{- $waitImage := include "reitti.image" (list $ .Values.waitFor.image) }}
+        {{- $valkeyHost := ternary (printf "%s-valkey" $fullName) .Values.valkey.external.host .Values.valkey.enabled }}
+        {{- $valkeyPort := ternary "6379" (.Values.valkey.external.port | toString) .Values.valkey.enabled }}
+        {{- $deps := list
+              (dict "name" "wait-for-db" "host" (include "reitti.databaseHost" .) "port" (.Values.database.port | toString))
+              (dict "name" "wait-for-valkey" "host" $valkeyHost "port" $valkeyPort) }}
+        {{- if .Values.tileCache.enabled }}
+        {{- $deps = append $deps (dict "name" "wait-for-tile-cache" "host" (printf "%s-tile-cache" $fullName) "port" "80") }}
+        {{- end }}
+        {{- range $dep := $deps }}
+        - name: {{ $dep.name }}
+          image: {{ $waitImage | quote }}
+          imagePullPolicy: {{ $.Values.waitFor.image.pullPolicy }}
+          securityContext:
+            {{- toYaml ($.Values.reitti.securityContext | default $.Values.securityContext) | nindent 12 }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              until nc -z -w 2 "{{ $dep.host }}" {{ $dep.port }}; do
+                echo "Waiting for {{ $dep.host }}:{{ $dep.port }} ..."
+                sleep 2
+              done
+              echo "{{ $dep.host }}:{{ $dep.port }} is reachable."
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
+        {{- end }}
+      {{- end }}
       containers:
         - name: reitti
           image: {{ include "reitti.image" (list $ .Values.reitti.image) | quote }}

@@ -23,59 +23,41 @@ spec:
       securityContext:
         {{- toYaml (.Values.paikka.podSecurityContext | default .Values.podSecurityContext) | nindent 8 }}
       {{- if and .Values.paikka.autoImport.enabled (include "reitti.paikka.pbfUrls" .) }}
-      # Runs before the app opens its RocksDB, so import and serving never
-      # fight over the database lock. Skips instantly once imported.
+      {{- if not .Values.paikka.persistence.data.enabled }}
+      {{- fail "paikka.autoImport needs paikka.persistence.data.enabled (the import job and the app must share the data PVC)" }}
+      {{- end }}
+      # The heavy lifting happens in the paikka-import Job; this init only
+      # waits for its completion marker. Waiting is restart-free, so pod
+      # restarts during an hours-long import cost nothing — and the app never
+      # opens its RocksDB while the job writes it.
       initContainers:
-        - name: autoimport
-          image: {{ include "reitti.image" (list $ .Values.paikka.image) | quote }}
-          imagePullPolicy: {{ .Values.paikka.image.pullPolicy }}
+        - name: wait-for-import
+          image: {{ include "reitti.image" (list $ .Values.waitFor.image) | quote }}
+          imagePullPolicy: {{ .Values.waitFor.image.pullPolicy }}
           securityContext:
             {{- toYaml (.Values.paikka.securityContext | default .Values.securityContext) | nindent 12 }}
           command:
-            - /bin/bash
+            - /bin/sh
             - -ec
             - |
               marker=/data/.helm-autoimport
-              if [ -f "$marker" ] && [ "$(cat "$marker")" = "$PBF_URLS" ]; then
-                echo "Auto-import: dataset for '$PBF_URLS' already present, skipping."
-                exit 0
-              fi
-              cd /data
-              i=0
-              files=""
-              for url in $PBF_URLS; do
-                echo "Auto-import: downloading $url"
-                wget -q -O "region-$i.osm.pbf" "$url"
-                echo "Auto-import: filtering region-$i (osmium)"
-                prepare "region-$i.osm.pbf" "filtered-$i.osm.pbf"
-                rm -f "region-$i.osm.pbf"
-                files="$files filtered-$i.osm.pbf"
-                i=$((i+1))
+              until [ -f "$marker" ] && [ "$(cat "$marker")" = "$PBF_URLS" ]; do
+                echo "Waiting for import job {{ include "reitti.paikka.importJobName" . }} ..."
+                sleep 10
               done
-              echo "Auto-import: importing $i region(s) with {{ .Values.paikka.autoImport.memory }} heap"
-              import --jar-file /app/app.jar --data-dir /data \
-                --memory {{ .Values.paikka.autoImport.memory }} \
-                {{- with .Values.paikka.autoImport.threads }}
-                --threads {{ . }} \
-                {{- end }}
-                $files
-              rm -f filtered-*.osm.pbf
-              printf '%s' "$PBF_URLS" > "$marker"
-              echo "Auto-import: done."
+              echo "Import data present."
           env:
             - name: PBF_URLS
               value: {{ include "reitti.paikka.pbfUrls" . | quote }}
-          {{- with .Values.paikka.autoImport.resources }}
           resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
           volumeMounts:
             - name: data
               mountPath: /data
-            {{- range .Values.paikka.emptyDirs }}
-            - name: {{ .name }}
-              mountPath: {{ .mountPath }}
-            {{- end }}
       {{- end }}
       containers:
         - name: paikka

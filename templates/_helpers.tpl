@@ -60,6 +60,16 @@ app.kubernetes.io/component: {{ $component }}
 {{- join " " (compact $urls) -}}
 {{- end }}
 
+{{/*
+Import job name, keyed by the URL set: changing the regions creates a NEW job
+(Job specs are immutable) and the old one is pruned. Deliberately NOT a helm
+hook: under ArgoCD, post-install hooks run as PostSync only after the app is
+healthy — but paikka only becomes healthy after the import, a deadlock.
+*/}}
+{{- define "reitti.paikka.importJobName" -}}
+{{- printf "%s-paikka-import-%s" (include "reitti.fullname" .) (include "reitti.paikka.pbfUrls" . | sha256sum | trunc 8) -}}
+{{- end }}
+
 {{/* PostgreSQL host: explicit database.host wins, else derive from the CNPG cluster */}}
 {{- define "reitti.databaseHost" -}}
 {{- if .Values.database.host -}}
