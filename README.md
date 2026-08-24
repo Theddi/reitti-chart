@@ -1,3 +1,6 @@
+# Orphaned repo, chart has a new home !
+https://git.thed-co.de/Theddi/charts
+
 # reitti
 
 Deploys [Reitti](https://github.com/dedicatedcode/reitti) (personal location
